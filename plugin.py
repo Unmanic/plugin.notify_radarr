@@ -43,7 +43,7 @@ logger = logging.getLogger("Unmanic.Plugin.notify_radarr")
 
 class Settings(PluginSettings):
     settings = {
-        'host_url':                  'http://radarr:7878',
+        'host_url':                  'http://localhost:7878',
         'api_key':                   '',
         'mode':                      'update_mode',
         'rename_files':              False,
