@@ -120,28 +120,31 @@ def check_file_size_under_max_file_size(path, minimum_file_size):
     return True
 
 
-def update_mode(api, abspath, rename_files):
-    basename = os.path.basename(abspath)
+def update_mode(api, dest_path, rename_files):
+    basename = os.path.basename(dest_path)
 
     # Run lookup search to fetch movie data and ID for rescan
-    lookup_results = api.lookup_movie(str(basename))
+    # Try with basename first.
+    lookup_results = api.lookup_movie(term=str(basename))
     logger.debug("lookup results: %s", str(lookup_results))
 
     # Loop over search results and just use the first result (best thing I can think of)
     movie_data = {}
-    for result in lookup_results:
-        if result.get('id'):
-            movie_data = result
-            break
+    if lookup_results and isinstance(lookup_results, list):
+        for result in lookup_results:
+            if result.get('id'):
+                movie_data = result
+                break
 
     # Parse movie data
     movie_title = movie_data.get('title')
-    logger.debug("Detected movie title: %s", movie_title)
     movie_id = movie_data.get('id')
+    
     if not movie_id:
-        logger.error("Missing movie ID. Failed to queue refresh of movie for file: '%s'", abspath)
+        logger.error("Missing movie ID. Failed to queue refresh of movie for file: '%s'", dest_path)
         return
-    logger.debug("Detected movie ID: %s", movie_id)
+    
+    logger.debug("Detected movie title: '%s' (ID: %s)", movie_title, movie_id)
 
     try:
         # Run API command for RefreshMovie
@@ -150,98 +153,78 @@ def update_mode(api, abspath, rename_files):
         result = api.post_command('RefreshMovie', movieIds=[movie_id])
         logger.debug("Received result:\n%s", str(result))
 
-        if result.get('message'):
-            logger.error("Failed to queue refresh of movie ID '%s' for file: '%s'", movie_id, abspath)
-            logger.error("Response from radarr: %s", result['message'])
+        if isinstance(result, dict) and result.get('message'):
+            logger.error("Failed to queue refresh of movie ID '%s' for file: '%s'. Radarr message: %s", movie_id, dest_path, result['message'])
             return
         else:
-            logger.info("Successfully queued refresh of movie '%s' for file: '%s'", movie_title, abspath)
-    except PyarrUnauthorizedError:
-        logger.error("Failed to queue refresh of movie '%s' for file: '%s'", movie_title, abspath)
-        logger.error("Unauthorized. Please ensure valid API Key is used.")
+            logger.info("Successfully queued refresh of movie '%s' for file: '%s'", movie_title, dest_path)
+    except (PyarrUnauthorizedError, PyarrAccessRestricted, PyarrResourceNotFound, PyarrBadGateway, PyarrConnectionError) as err:
+        logger.error("Failed to queue refresh of movie '%s' for file: '%s'. Error: %s", movie_title, dest_path, str(err))
         return
-    except PyarrAccessRestricted:
-        logger.error("Failed to queue refresh of movie '%s' for file: '%s'", movie_title, abspath)
-        logger.error("Access restricted. Please ensure API Key has correct permissions")
-        return
-    except PyarrResourceNotFound:
-        logger.error("Failed to queue refresh of movie '%s' for file: '%s'", movie_title, abspath)
-        logger.error("Resource not found")
-        return
-    except PyarrBadGateway:
-        logger.error("Failed to queue refresh of movie '%s' for file: '%s'", movie_title, abspath)
-        logger.error("Bad Gateway. Check your server is accessible")
-        return
-    except PyarrConnectionError:
-        logger.error("Failed to queue refresh of movie '%s' for file: '%s'", movie_title, abspath)
-        logger.error("Timeout connecting to radarr. Check your server is accessible")
+    except Exception as err:
+        logger.error("An unexpected error occurred while queuing refresh for movie ID '%s': %s", movie_id, str(err))
         return
 
     if rename_files:
-        time.sleep(3)  # Must give time for the refresh to complete before we run the rename.
+        logger.info("Waiting 10 seconds before triggering rename for movie '%s'...", movie_title)
+        time.sleep(10)  # Must give time for the refresh to complete before we run the rename.
         try:
             result = api.post_command('RenameMovie', movieIds=[movie_id])
             logger.debug("Received result for 'RenameMovie' command:\n%s", result)
             if isinstance(result, dict):
-                logger.info("Successfully triggered rename of movie '%s' for file: '%s'", movie_title, abspath)
+                logger.info("Successfully triggered rename of movie '%s' for file: '%s'", movie_title, dest_path)
             else:
-                logger.error("Failed to trigger rename of movie ID '%s' for file: '%s'", movie_id, abspath)
-        except PyarrUnauthorizedError:
-            logger.error("Failed to trigger rename of movie '%s' for file: '%s'", movie_title, abspath)
-            logger.error("Unauthorized. Please ensure valid API Key is used.")
-        except PyarrAccessRestricted:
-            logger.error("Failed to trigger rename of movie '%s' for file: '%s'", movie_title, abspath)
-            logger.error("Access restricted. Please ensure API Key has correct permissions")
-        except PyarrResourceNotFound:
-            logger.error("Failed to trigger rename of movie '%s' for file: '%s'", movie_title, abspath)
-            logger.error("Resource not found")
-        except PyarrBadGateway:
-            logger.error("Failed to trigger rename of movie '%s' for file: '%s'", movie_title, abspath)
-            logger.error("Bad Gateway. Check your server is accessible")
-        except PyarrConnectionError:
-            logger.error("Failed to trigger rename of movie '%s' for file: '%s'", movie_title, abspath)
-            logger.error("Timeout connecting to radarr. Check your server is accessible")
+                logger.error("Failed to trigger rename of movie ID '%s' for file: '%s'. Result: %s", movie_id, dest_path, str(result))
+        except (PyarrUnauthorizedError, PyarrAccessRestricted, PyarrResourceNotFound, PyarrBadGateway, PyarrConnectionError) as err:
+            logger.error("Failed to trigger rename of movie '%s' for file: '%s'. Error: %s", movie_title, dest_path, str(err))
+        except Exception as err:
+            logger.error("Failed to trigger rename of movie ID '%s' for file: '%s'. Error: %s", movie_id, dest_path, str(err))
 
 
 def import_mode(api, source_path, dest_path):
     source_basename = os.path.basename(source_path)
-    abspath_string = dest_path.replace('\\', '')
+    abspath_string = os.path.abspath(dest_path)
 
     download_id = None
     movie_title = None
 
-    queue = api.get_queue()
-    message = pprint.pformat(queue, indent=1)
-    logger.debug("Current queue \n%s", message)
-    for item in queue.get('records', []):
-        item_output_basename = os.path.basename(item.get('outputPath'))
-        if item_output_basename == source_basename:
-            download_id = item.get('downloadId')
-            movie_title = item.get('title')
-            break
+    try:
+        queue = api.get_queue()
+        message = pprint.pformat(queue, indent=1)
+        logger.debug("Current Radarr queue: \n%s", message)
+        for item in queue.get('records', []):
+            item_output_basename = os.path.basename(item.get('outputPath', ''))
+            if item_output_basename == source_basename:
+                download_id = item.get('downloadId')
+                movie_title = item.get('title')
+                break
+    except Exception as err:
+        logger.error("Failed to fetch Radarr queue: %s", str(err))
+        # Proceed anyway
 
     # Run import
-    if download_id:
-        # Run API command for DownloadedMoviesScan
-        #   - DownloadedMoviesScan with a path and downloadClientId
-        logger.info("Queued import movie '%s' using downloadClientId: '%s'", movie_title, download_id)
-        result = api.post_command('DownloadedMoviesScan', path=abspath_string, downloadClientId=download_id)
-    else:
-        # Run API command for DownloadedMoviesScan without passing a downloadClientId
-        #   - DownloadedMoviesScan with a path and downloadClientId
-        logger.info("Queued import using just the file path '%s'", abspath_string)
-        result = api.post_command('DownloadedMoviesScan', path=abspath_string)
+    try:
+        if download_id:
+            # Run API command for DownloadedMoviesScan
+            #   - DownloadedMoviesScan with a path and downloadClientId
+            logger.info("Queued import movie '%s' using downloadClientId: '%s' for path '%s'", movie_title, download_id, abspath_string)
+            result = api.post_command('DownloadedMoviesScan', path=abspath_string, downloadClientId=download_id)
+        else:
+            # Run API command for DownloadedMoviesScan without passing a downloadClientId
+            #   - DownloadedMoviesScan with a path and downloadClientId
+            logger.info("Queued import using just the file path '%s'", abspath_string)
+            result = api.post_command('DownloadedMoviesScan', path=abspath_string)
 
-    # Log results
-    message = result
-    if isinstance(result, dict) or isinstance(result, list):
-        message = pprint.pformat(result, indent=1)
-    logger.debug("Queued import result \n%s", message)
-    if (isinstance(result, dict)) and result.get('message'):
-        logger.error("Failed to queued import of file: '%s'", dest_path)
-        return
-    # TODO: Check for other possible outputs
-    logger.info("Successfully queued import of file: '%s'", dest_path)
+        # Log results
+        if isinstance(result, dict) and result.get('message'):
+            logger.error("Failed to queue import of file: '%s'. Radarr message: %s", dest_path, result['message'])
+            return
+
+        logger.info("Successfully queued import of file in Radarr: '%s'", dest_path)
+        logger.debug("Queued import result: %s", pprint.pformat(result, indent=1))
+
+    except Exception as err:
+        logger.error("Failed to queue import of file '%s' in Radarr: %s", dest_path, str(err))
 
 
 def process_files(settings, source_file, destination_files, host_url, api_key):
@@ -284,6 +267,14 @@ def on_postprocessor_task_results(data):
     else:
         settings = Settings()
 
+    # Do nothing if the task was not successful
+    if not data.get('task_processing_success'):
+        logger.debug("Skipping notify_radarr as the task was not successful.")
+        return
+    if not data.get('file_move_processes_success'):
+        logger.debug("Skipping notify_radarr as the file move processes were not successful.")
+        return
+
     # Fetch destination and source files
     source_file = data.get('source_data', {}).get('abspath')
     destination_files = data.get('destination_files', [])
@@ -291,4 +282,9 @@ def on_postprocessor_task_results(data):
     # Setup API
     host_url = settings.get_setting('host_url')
     api_key = settings.get_setting('api_key')
+
+    if not api_key:
+        logger.error("Radarr API Key is not configured. Skipping notification.")
+        return
+
     process_files(settings, source_file, destination_files, host_url, api_key)

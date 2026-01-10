@@ -1,4 +1,10 @@
 
+**<span style="color:#56adda">0.0.5</span>**
+- Update pyarr dependency to fix new Radarr API v4 issues
+- Ensure task was successful before notifying Radarr
+- Improve path handling and error logging
+- Use full path for movie identification to improve accuracy
+
 **<span style="color:#56adda">0.0.4</span>**
 - Add ability to trigger Radarr file renaming
 - Improve logging
