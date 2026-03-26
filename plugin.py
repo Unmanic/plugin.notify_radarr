@@ -502,7 +502,7 @@ def render_plugin_api(data):
             return
 
         movie = payload.get('movie', {})
-        root_path = movie.get('path')
+        root_path =  movie.get('folderPath') or movie.get('path')
 
         movie_files = []
         if isinstance(payload.get('movieFile'), dict):
